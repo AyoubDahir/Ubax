@@ -125,7 +125,7 @@ class SalesSummaryPersonReportWizard(models.TransientModel):
         # Main data query
         self.env.cr.execute(
             """
-            SELECT DATE(so.order_date), 
+            SELECT DATE(so.order_date),  
                     p.name, 
                     sol.quantity, 
                     (((COALESCE(sol.quantity, 0)) - (COALESCE(srl.returned_quantity, 0)) )* (p.discount /100)) 
@@ -149,7 +149,7 @@ class SalesSummaryPersonReportWizard(models.TransientModel):
             WHERE spo.state = 'confirmed'
             AND sp.id = %s
             AND DATE(so.order_date) BETWEEN %s AND %s
-            ORDER BY DATE(so.order_date), p.name;
+            ORDER BY DATE(so.order_date),spo.id;
         """,
             (self.salesperson_id.id, self.start_date, self.end_date),
         )
