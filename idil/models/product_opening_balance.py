@@ -252,6 +252,7 @@ class ProductOpeningBalance(models.Model):
                             "reffno": product.name,
                             "product_opening_balance_id": self.id,
                             "trx_date": self.date,
+                            "rate": self.rate,
                             "amount": amount_in_bom_currency,
                             "amount_paid": amount_in_bom_currency,
                             "remaining_amount": 0,

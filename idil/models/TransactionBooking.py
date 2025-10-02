@@ -14,6 +14,7 @@ _logger = logging.getLogger(__name__)
 class TransactionBooking(models.Model):
     _name = "idil.transaction_booking"
     _description = "Transaction Booking"
+    _inherit = ["mail.thread", "mail.activity.mixin"]
     _order = "id desc"
 
     # Primary Key Fields
@@ -34,8 +35,12 @@ class TransactionBooking(models.Model):
         "idil.sales.sales_personnel", string="Sales Person"
     )
     # Add a field to link to the SaleOrder. This assumes you have a unique identifier (like an ID) for SaleOrder.
+
     sale_order_id = fields.Many2one(
-        "idil.sale.order", string="Linked Sale Order", ondelete="cascade"
+        "idil.sale.order",
+        string="Sales Order",
+        index=True,
+        ondelete="cascade",
     )
     cusotmer_sale_order_id = fields.Many2one(
         "idil.customer.sale.order",
@@ -76,6 +81,7 @@ class TransactionBooking(models.Model):
         string="Payment Status",
         help="Description or additional information about the payment status.",
     )
+
     trx_date = fields.Date(
         string="Transaction Date", default=lambda self: fields.Date.today()
     )
@@ -216,6 +222,28 @@ class TransactionBooking(models.Model):
         string="Employee Salary Reference",
         ondelete="set null",
     )
+    currency_id = fields.Many2one(
+        "res.currency",
+        string="Currency",
+        store=True,
+        readonly=True,
+    )
+
+    rate = fields.Float(
+        string="Exchange Rate",
+        digits=(16, 5),
+        store=True,
+        readonly=True,
+        required=True,
+        help="Select the exchange rate for the transaction.",
+        tracking=True,
+    )
+
+    @api.constrains("trx_date")
+    def _check_trx_date_not_future(self):
+        for rec in self:
+            if rec.trx_date and rec.trx_date > fields.Date.today():
+                raise ValidationError("Transaction Date cannot be in the future.")
 
     @api.constrains("amount_paid")
     def _check_amount_paid(self):
@@ -446,6 +474,12 @@ class TransactionBookingline(models.Model):
         required=True,
         default=lambda self: self.env.company,
     )
+    sale_order_id = fields.Many2one(
+        "idil.sale.order",
+        string="Sales Order",
+        index=True,
+        ondelete="cascade",
+    )
     sales_payment_id = fields.Many2one(
         "idil.sales.payment",
         string="Sales Payment",
@@ -534,6 +568,19 @@ class TransactionBookingline(models.Model):
         string="Employee Salary Reference",
         ondelete="set null",
     )
+    rate = fields.Float(
+        string="Exchange Rate",
+        related="transaction_booking_id.rate",
+        store=True,
+        readonly=True,
+        help="Same rate as on the parent booking.",
+    )
+
+    @api.constrains("transaction_date")
+    def _check_transaction_date_not_future(self):
+        for rec in self:
+            if rec.transaction_date and rec.transaction_date > fields.Date.today():
+                raise ValidationError("Transaction Line Date cannot be in the future.")
 
     @api.depends("account_number")
     def _compute_account_display(self):
@@ -625,309 +672,6 @@ class TransactionBookingline(models.Model):
             "res_model": "idil.trial.balance",
             "target": "new",
         }
-
-    # def compute_company_trial_balance(self, report_currency_id, company_id, as_of_date):
-    #     self.env.cr.execute(
-    #         """
-    #         SELECT
-    #             tb.account_number,
-    #             ca.currency_id,
-    #             SUM(tb.dr_amount) AS dr_total,
-    #             SUM(tb.cr_amount) AS cr_total
-    #         FROM
-    #             idil_transaction_bookingline tb
-    #         JOIN idil_chart_account ca ON tb.account_number = ca.id
-    #         WHERE
-    #             tb.company_id = %s  -- Filter by company
-    #             AND tb.transaction_date <= %s  -- Filter by as_of_date
-    #             AND ca.name != 'Exchange Clearing Account'  -- Exclude Exchange Clearing Account
-    #         GROUP BY
-    #             tb.account_number,ca.code, ca.currency_id
-    #         HAVING
-    #             SUM(tb.dr_amount) - SUM(tb.cr_amount) <> 0  -- Exclude accounts with zero net balance
-    #         ORDER BY
-    #             ca.code
-    #     """,
-    #         (company_id.id, as_of_date),
-    #     )
-
-    #     result = self.env.cr.dictfetchall()
-
-    #     total_dr_balance = 0
-    #     total_cr_balance = 0
-
-    #     # Clear previous trial balance records
-    #     self.env["idil.company.trial.balance"].search([]).unlink()
-
-    #     usd_currency = self.env["res.currency"].search([("name", "=", "USD")], limit=1)
-
-    #     for line in result:
-    #         account = self.env["idil.chart.account"].browse(line["account_number"])
-    #         dr_total = line["dr_total"]
-    #         cr_total = line["cr_total"]
-
-    #         # Convert amounts to USD using the as_of_date
-    #         if line["currency_id"] != usd_currency.id:
-    #             currency = self.env["res.currency"].browse(line["currency_id"])
-    #             dr_total = currency._convert(
-    #                 dr_total, usd_currency, self.env.user.company_id, as_of_date
-    #             )
-    #             cr_total = currency._convert(
-    #                 cr_total, usd_currency, self.env.user.company_id, as_of_date
-    #             )
-
-    #         # Calculate the net balance
-    #         net_balance = dr_total - cr_total
-
-    #         if net_balance > 0:
-    #             # Positive net balance indicates a debit balance
-    #             dr_balance = net_balance
-    #             cr_balance = 0
-    #             total_dr_balance += dr_balance
-    #         else:
-    #             # Negative net balance indicates a credit balance
-    #             dr_balance = 0
-    #             cr_balance = abs(net_balance)
-    #             total_cr_balance += cr_balance
-
-    #         # Create the trial balance record
-    #         self.env["idil.company.trial.balance"].create(
-    #             {
-    #                 "account_number": account.id,
-    #                 "header_name": account.header_name,
-    #                 "currency_id": usd_currency.id,
-    #                 "dr_balance": dr_balance,
-    #                 "cr_balance": cr_balance,
-    #             }
-    #         )
-
-    #     # Add a grand total row
-    #     self.env["idil.company.trial.balance"].create(
-    #         {
-    #             "account_number": None,
-    #             "currency_id": usd_currency.id,
-    #             "dr_balance": total_dr_balance,
-    #             "cr_balance": total_cr_balance,
-    #             "label": "Grand Total",
-    #         }
-    #     )
-
-    #     return {
-    #         "type": "ir.actions.act_window",
-    #         "name": "Company Trial Balance",
-    #         "view_mode": "tree",
-    #         "res_model": "idil.company.trial.balance",
-    #         "target": "new",
-    #     }
-
-    # def compute_company_trial_balance(self, report_currency_id, company_id, as_of_date):
-    #     self.env.cr.execute(
-    #         """
-    #         SELECT
-    #             tb.account_number,
-    #             ca.currency_id,
-    #             SUM(tb.dr_amount) AS dr_total,
-    #             SUM(tb.cr_amount) AS cr_total
-    #         FROM
-    #             idil_transaction_bookingline tb
-    #         JOIN idil_chart_account ca ON tb.account_number = ca.id
-    #         WHERE
-    #             tb.company_id = %s
-    #             AND tb.transaction_date <= %s
-    #             AND ca.name != 'Exchange Clearing Account'
-    #         GROUP BY
-    #             tb.account_number, ca.code, ca.currency_id
-    #         HAVING
-    #             SUM(tb.dr_amount) - SUM(tb.cr_amount) <> 0
-    #         ORDER BY
-    #             ca.code
-    #         """,
-    #         (company_id.id, as_of_date),
-    #     )
-
-    #     result = self.env.cr.dictfetchall()
-
-    #     # Clear previous trial balance records
-    #     self.env["idil.company.trial.balance"].search([]).unlink()
-
-    #     usd_currency = self.env["res.currency"].search([("name", "=", "USD")], limit=1)
-
-    #     for line in result:
-    #         account = self.env["idil.chart.account"].browse(line["account_number"])
-    #         dr_total = line["dr_total"] or 0.0
-    #         cr_total = line["cr_total"] or 0.0
-
-    #         if line["currency_id"] != usd_currency.id:
-    #             currency = self.env["res.currency"].browse(line["currency_id"])
-    #             rate_dict = currency._get_rates(company_id, as_of_date)
-    #             rate = rate_dict.get(currency.id, 0)
-    #             if not rate:
-    #                 raise Exception(
-    #                     f"No rate found for {currency.name} on {as_of_date}"
-    #                 )
-    #             dr_total = dr_total / rate
-    #             cr_total = cr_total / rate
-    #             _logger.info(
-    #                 f"Account {account.code}: Converted using rate {rate} | dr_total: {dr_total} | cr_total: {cr_total}"
-    #             )
-    #         else:
-    #             _logger.info(
-    #                 f"Account {account.code}: USD - No conversion | dr_total: {dr_total} | cr_total: {cr_total}"
-    #             )
-
-    #         net_balance = dr_total - cr_total
-
-    #         if net_balance > 0:
-    #             dr_balance = net_balance
-    #             cr_balance = 0.0
-    #         else:
-    #             dr_balance = 0.0
-    #             cr_balance = abs(net_balance)
-
-    #         self.env["idil.company.trial.balance"].create(
-    #             {
-    #                 "account_number": account.id,
-    #                 "header_name": account.header_name,
-    #                 "currency_id": usd_currency.id,
-    #                 "dr_balance": dr_balance,
-    #                 "cr_balance": cr_balance,
-    #             }
-    #         )
-
-    #     # Only sum detail lines for the grand total
-    #     detail_lines = self.env["idil.company.trial.balance"].search(
-    #         [("header_name", "!=", False)]
-    #     )
-
-    #     grand_dr = sum(detail_lines.mapped("dr_balance"))
-    #     grand_cr = sum(detail_lines.mapped("cr_balance"))
-
-    #     self.env["idil.company.trial.balance"].create(
-    #         {
-    #             "account_number": None,
-    #             "currency_id": usd_currency.id,
-    #             "dr_balance": grand_dr,
-    #             "cr_balance": grand_cr,
-    #             "label": "Grand Total",
-    #         }
-    #     )
-
-    #     return {
-    #         "type": "ir.actions.act_window",
-    #         "name": "Company Trial Balance",
-    #         "view_mode": "tree",
-    #         "res_model": "idil.company.trial.balance",
-    #         "target": "new",
-    #     }
-
-    # def compute_company_trial_balance(self, report_currency_id, company_id, as_of_date):
-    #     # 1) Fetch raw booking lines (up to as_of_date), including each line's date and account currency
-    #     self.env.cr.execute(
-    #         """
-    #         SELECT
-    #             tb.id,
-    #             tb.account_number,
-    #             tb.dr_amount,
-    #             tb.cr_amount,
-    #             tb.transaction_date::date AS tdate,
-    #             ca.currency_id
-    #         FROM idil_transaction_bookingline tb
-    #         JOIN idil_chart_account ca ON tb.account_number = ca.id
-    #         WHERE tb.company_id = %s
-    #         AND tb.transaction_date <= %s
-    #         AND ca.name != 'Exchange Clearing Account'
-    #         """,
-    #         (company_id.id, as_of_date),
-    #     )
-    #     lines = self.env.cr.dictfetchall()
-
-    #     # 2) Clear previous trial balance records (adjust scope if you want per company)
-    #     self.env["idil.company.trial.balance"].search([]).unlink()
-
-    #     Currency = self.env["res.currency"]
-    #     Account = self.env["idil.chart.account"]
-    #     usd_currency = Currency.search([("name", "=", "USD")], limit=1)
-
-    #     # Cache for rates: {(currency_id, date): rate}
-    #     rates_cache = {}
-
-    #     # Aggregation bucket per account in USD
-    #     # {account_id: {"dr": float, "cr": float}}
-    #     per_account_usd = {}
-
-    #     for row in lines:
-    #         account_id = row["account_number"]
-    #         cur_id = row["currency_id"]
-    #         tdate = row["tdate"]  # date part only
-    #         dr = row["dr_amount"] or 0.0
-    #         cr = row["cr_amount"] or 0.0
-
-    #         if not account_id or not cur_id:
-    #             continue
-
-    #         # Convert to USD using each line's transaction date
-    #         if cur_id != usd_currency.id:
-    #             key = (cur_id, tdate)
-    #             if key not in rates_cache:
-    #                 cur = Currency.browse(cur_id)
-    #                 # _get_rates returns a dict {currency.id: rate} for that date
-    #                 rate_dict = cur._get_rates(company_id, tdate)
-    #                 rate = rate_dict.get(cur.id) or 0.0
-    #                 if not rate:
-    #                     raise Exception(f"No rate found for {cur.name} on {tdate}")
-    #                 rates_cache[key] = rate
-    #             rate = rates_cache[key]
-    #             dr_usd = dr / rate
-    #             cr_usd = cr / rate
-    #         else:
-    #             dr_usd = dr
-    #             cr_usd = cr
-
-    #         bucket = per_account_usd.setdefault(account_id, {"dr": 0.0, "cr": 0.0})
-    #         bucket["dr"] += dr_usd
-    #         bucket["cr"] += cr_usd
-
-    #     # 3) Create detail lines (netted per account)
-    #     grand_dr = grand_cr = 0.0
-    #     for acc_id, totals in per_account_usd.items():
-    #         net = (totals["dr"] - totals["cr"]) or 0.0
-    #         if abs(net) < 1e-9:
-    #             continue  # skip zero-net accounts
-
-    #         dr_balance = net if net > 0 else 0.0
-    #         cr_balance = -net if net < 0 else 0.0
-
-    #         account = Account.browse(acc_id)
-    #         self.env["idil.company.trial.balance"].create(
-    #             {
-    #                 "account_number": account.id,
-    #                 "header_name": account.header_name,
-    #                 "currency_id": usd_currency.id,
-    #                 "dr_balance": dr_balance,
-    #                 "cr_balance": cr_balance,
-    #             }
-    #         )
-    #         grand_dr += dr_balance
-    #         grand_cr += cr_balance
-
-    #     # 4) Grand total (only detail lines contribute)
-    #     self.env["idil.company.trial.balance"].create(
-    #         {
-    #             "account_number": None,
-    #             "currency_id": usd_currency.id,
-    #             "dr_balance": grand_dr,
-    #             "cr_balance": grand_cr,
-    #             "label": "Grand Total",
-    #         }
-    #     )
-
-    #     return {
-    #         "type": "ir.actions.act_window",
-    #         "name": "Company Trial Balance",
-    #         "view_mode": "tree",
-    #         "res_model": "idil.company.trial.balance",
-    #         "target": "new",
-    #     }
 
     def compute_company_trial_balance(
         self, report_currency_id, company_id, as_of_date, exact_day=False

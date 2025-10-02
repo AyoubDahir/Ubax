@@ -9,6 +9,10 @@ class IdilItemOpeningBalance(models.Model):
     _inherit = ["mail.thread", "mail.activity.mixin"]
     _order = "id desc"
 
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
+
     name = fields.Char(string="Reference", readonly=True, default="New")
 
     date = fields.Date(string="Date", default=fields.Date.today, required=True)
@@ -27,6 +31,49 @@ class IdilItemOpeningBalance(models.Model):
     total_amount = fields.Float(
         string="Total Amount", compute="_compute_total_amount", store=True
     )
+    # Currency fields
+    currency_id = fields.Many2one(
+        "res.currency",
+        string="Currency",
+        required=True,
+        default=lambda self: self.env["res.currency"].search(
+            [("name", "=", "SL")], limit=1
+        ),
+        readonly=True,
+    )
+
+    rate = fields.Float(
+        string="Exchange Rate",
+        compute="_compute_exchange_rate",
+        store=True,
+        readonly=True,
+    )
+
+    @api.depends("currency_id", "date", "company_id")
+    def _compute_exchange_rate(self):
+        Rate = self.env["res.currency.rate"].sudo()
+        for order in self:
+            order.rate = 0.0
+            if not order.currency_id:
+                continue
+
+            # Use the order's date; fallback to today if missing
+            doc_date = (
+                fields.Date.to_date(order.date) if order.date else fields.Date.today()
+            )
+
+            # Get latest rate on or before the doc_date, preferring the order's company, then global (company_id False)
+            rate_rec = Rate.search(
+                [
+                    ("currency_id", "=", order.currency_id.id),
+                    ("name", "<=", doc_date),
+                    ("company_id", "in", [order.company_id.id, False]),
+                ],
+                order="company_id desc, name desc",
+                limit=1,
+            )
+
+            order.rate = rate_rec.rate or 0.0
 
     @api.depends("line_ids.total")
     def _compute_total_amount(self):
@@ -51,7 +98,7 @@ class IdilItemOpeningBalance(models.Model):
                     0,
                     {
                         "item_id": item.id,
-                        "quantity": 0,
+                        "quantity": 1000,
                         "cost_price": item.cost_price,
                     },
                 )
@@ -107,6 +154,7 @@ class IdilItemOpeningBalance(models.Model):
                                 "idil.transaction_booking"
                             ),
                             "reffno": item.name,
+                            "rate": self.rate,
                             "item_opening_balance_id": self.id,
                             "trx_date": self.date,
                             "amount": amount,
@@ -130,6 +178,7 @@ class IdilItemOpeningBalance(models.Model):
                                 "transaction_type": "dr",
                                 "dr_amount": amount,
                                 "cr_amount": 0,
+                                "rate": self.rate,
                                 "transaction_date": self.date,
                             },
                             {
@@ -141,6 +190,7 @@ class IdilItemOpeningBalance(models.Model):
                                 "transaction_type": "cr",
                                 "cr_amount": amount,
                                 "dr_amount": 0,
+                                "rate": self.rate,
                                 "transaction_date": self.date,
                             },
                         ]
@@ -150,12 +200,14 @@ class IdilItemOpeningBalance(models.Model):
                     ItemMovement.create(
                         {
                             "item_id": item.id,
+                            "transaction_number": self.name,
                             "item_opening_balance_id": self.id,
                             "date": self.date,
                             "quantity": line.quantity,
                             "source": f"Opening Balance Inventory for Item {item.name}",
                             "destination": "Inventory",
                             "movement_type": "in",
+                            "related_document": f"idil.item.opening.balance.line,{line.id}",
                         }
                     )
 
@@ -251,6 +303,7 @@ class IdilItemOpeningBalance(models.Model):
                             "transaction_number": self.env["ir.sequence"].next_by_code(
                                 "idil.transaction_booking"
                             ),
+                            "rate": self.rate,
                             "reffno": item.name,
                             "item_opening_balance_id": self.id,
                             "trx_date": self.date,
@@ -274,6 +327,7 @@ class IdilItemOpeningBalance(models.Model):
                                 "transaction_type": "dr",
                                 "dr_amount": amount,
                                 "cr_amount": 0,
+                                "rate": self.rate,
                                 "transaction_date": self.date,
                             },
                             {
@@ -285,6 +339,7 @@ class IdilItemOpeningBalance(models.Model):
                                 "transaction_type": "cr",
                                 "cr_amount": amount,
                                 "dr_amount": 0,
+                                "rate": self.rate,
                                 "transaction_date": self.date,
                             },
                         ]
@@ -294,11 +349,13 @@ class IdilItemOpeningBalance(models.Model):
                         {
                             "item_id": item.id,
                             "item_opening_balance_id": self.id,
+                            "transaction_number": self.name,
                             "date": self.date,
                             "quantity": line.quantity,
                             "source": f"Opening Balance Inventory for Item {item.name}",
                             "destination": "Inventory",
                             "movement_type": "in",
+                            "related_document": f"idil.item.opening.balance.line,{line.id}",
                         }
                     )
         except Exception as e:

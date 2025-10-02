@@ -5,6 +5,8 @@ import re
 from odoo.exceptions import ValidationError, UserError
 import logging
 
+from odoo.tools import float_round
+
 _logger = logging.getLogger(__name__)
 
 
@@ -12,7 +14,10 @@ class ManufacturingOrder(models.Model):
     _name = "idil.manufacturing.order"
     _description = "Manufacturing Order"
     _inherit = ["mail.thread", "mail.activity.mixin"]
-    _order = "id desc"
+
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
 
     name = fields.Char(string="Order Reference", tracking=True)
     bom_id = fields.Many2one(
@@ -108,37 +113,71 @@ class ManufacturingOrder(models.Model):
         readonly=True,
     )
 
-    @api.depends("currency_id")
-    def _compute_exchange_rate(self):
-        for order in self:
-            if order.currency_id:
-                rate = self.env["res.currency.rate"].search(
-                    [
-                        ("currency_id", "=", order.currency_id.id),
-                        ("name", "=", fields.Date.today()),
-                        ("company_id", "=", self.env.company.id),
-                    ],
-                    limit=1,
+    @api.constrains("scheduled_start_date")
+    def _check_scheduled_start_date_not_future(self):
+        for record in self:
+            if (
+                record.scheduled_start_date
+                and record.scheduled_start_date.date() > fields.Date.today()
+            ):
+                raise ValidationError(
+                    "Scheduled Start Date cannot be in the future. Please select today or a previous date."
                 )
-                order.rate = rate.rate if rate else 0.0
-            else:
-                order.rate = 0.0
 
-    @api.constrains("currency_id")
-    def _check_exchange_rate_exists(self):
+    @api.depends("currency_id", "scheduled_start_date", "company_id")
+    def _compute_exchange_rate(self):
+        Rate = self.env["res.currency.rate"].sudo()
         for order in self:
-            if order.currency_id:
-                rate = self.env["res.currency.rate"].search_count(
-                    [
-                        ("currency_id", "=", order.currency_id.id),
-                        ("name", "=", fields.Date.today()),
-                        ("company_id", "=", self.env.company.id),
-                    ]
+            order.rate = 0.0
+            if not order.currency_id:
+                continue
+
+            # Use the order's date; fallback to today if missing
+            doc_date = (
+                fields.Date.to_date(order.scheduled_start_date)
+                if order.scheduled_start_date
+                else fields.Date.today()
+            )
+
+            # Get latest rate on or before the doc_date, preferring the order's company, then global (company_id False)
+            rate_rec = Rate.search(
+                [
+                    ("currency_id", "=", order.currency_id.id),
+                    ("name", "<=", doc_date),
+                    ("company_id", "in", [order.company_id.id, False]),
+                ],
+                order="company_id desc, name desc",
+                limit=1,
+            )
+
+            order.rate = rate_rec.rate or 0.0
+
+    @api.constrains("currency_id", "scheduled_start_date", "company_id")
+    def _check_exchange_rate_exists(self):
+        Rate = self.env["res.currency.rate"].sudo()
+        for order in self:
+            if not order.currency_id:
+                continue
+
+            doc_date = (
+                fields.Date.to_date(order.scheduled_start_date)
+                if order.scheduled_start_date
+                else fields.Date.today()
+            )
+
+            exists = Rate.search_count(
+                [
+                    ("currency_id", "=", order.currency_id.id),
+                    ("name", "<=", doc_date),
+                    ("company_id", "in", [order.company_id.id, False]),
+                ]
+            )
+
+            if not exists:
+                raise exceptions.ValidationError(
+                    f"No exchange rate for {order.currency_id.name} on or before {doc_date}. "
+                    f"Please create a rate for that date (company: {order.company_id.name})."
                 )
-                if rate == 0:
-                    raise exceptions.ValidationError(
-                        "No exchange rate found for today. Please insert today's rate before saving."
-                    )
 
     @api.depends(
         "product_id",
@@ -378,6 +417,7 @@ class ManufacturingOrder(models.Model):
                             "idil.transaction_booking"
                         ),
                         "reffno": order.name,
+                        "rate": order.rate,
                         "manufacturing_order_id": order.id,
                         "order_number": order.name,
                         "amount": order.product_cost,
@@ -577,19 +617,6 @@ class ManufacturingOrder(models.Model):
                     )
 
                 # Adjust stock levels for items used in manufacturing
-                try:
-                    for line in order.manufacturing_order_line_ids:
-                        if line.item_id.item_type == "inventory":
-                            if line.item_id.quantity < line.quantity:
-                                raise ValidationError(
-                                    f"Insufficient stock for item '{line.item_id.name}'. Current stock: {line.item_id.quantity}, Requested: {line.quantity}"
-                                )
-                            with self.env.cr.savepoint():
-                                line.item_id.with_context(
-                                    update_transaction_booking=False
-                                ).adjust_stock(line.quantity)
-                except ValidationError as e:
-                    raise ValidationError(e.args[0])
 
                 # Create commission record and link it to manufacturing order
                 if order.commission_amount > 0:
@@ -617,6 +644,22 @@ class ManufacturingOrder(models.Model):
                         "source_document": order.name,
                     }
                 )
+
+                for line in order.manufacturing_order_line_ids:
+                    self.env["idil.item.movement"].create(
+                        {
+                            "item_id": line.item_id.id,
+                            "date": order.scheduled_start_date,
+                            "manufacturing_order_line_id": line.id,
+                            "manufacturing_order_id": order.id,
+                            "quantity": -line.quantity,  # consume from Inventory
+                            "source": "Inventory",
+                            "destination": "Manufacturing",
+                            "movement_type": "out",
+                            "related_document": f"idil.manufacturing.order.line,{line.id}",
+                            "transaction_number": order.name,
+                        }
+                    )
 
                 return order
         except Exception as e:
@@ -655,26 +698,12 @@ class ManufacturingOrder(models.Model):
                     # --- 1. Apply changes ---
                     res = super(ManufacturingOrder, order).write(vals)
 
-                    # --- 2. Adjust Product Stock ---
-                    # if "product_qty" in vals or "product_id" in vals:
-                    #     diff = order.product_qty - old_product_qty
-                    #     if diff != 0:
-                    #         order.product_id.stock_quantity += diff
-                    #         order.product_id.write(
-                    #             {"stock_quantity": order.product_id.stock_quantity}
-                    #         )
-
                     # --- 3. Adjust Item Stock and Movement ---
                     for line in order.manufacturing_order_line_ids:
                         old_qty = old_lines.get(line.id, 0.0)
                         new_qty = line.quantity
                         item = line.item_id
                         qty_diff = new_qty - old_qty
-
-                        # Adjust stock
-                        if qty_diff != 0 and item.item_type == "inventory":
-                            item.quantity -= qty_diff
-                            item.write({"quantity": item.quantity})
 
                         # Adjust or create movement
                         movement = self.env["idil.item.movement"].search(
@@ -689,19 +718,9 @@ class ManufacturingOrder(models.Model):
                         )
                         if movement:
                             movement.write(
-                                {"quantity": -new_qty, "date": fields.Date.today()}
-                            )
-                        else:
-                            self.env["idil.item.movement"].create(
                                 {
-                                    "item_id": item.id,
-                                    "date": order.scheduled_start_date,
                                     "quantity": -new_qty,
-                                    "source": "Inventory",
-                                    "destination": "Manufacturing",
-                                    "movement_type": "out",
-                                    "related_document": f"idil.manufacturing.order.line,{line.id}",
-                                    "transaction_number": order.name,
+                                    "date": order.scheduled_start_date,
                                 }
                             )
 
@@ -713,7 +732,7 @@ class ManufacturingOrder(models.Model):
                         product_movement.write(
                             {
                                 "quantity": order.product_qty,
-                                "date": fields.Datetime.now(),
+                                "date": order.scheduled_start_date,
                                 "source_document": order.name,
                             }
                         )
@@ -986,53 +1005,7 @@ class ManufacturingOrder(models.Model):
                             f"Cannot delete: Not enough stock to reverse manufacturing for product '{order.product_id.name}'. "
                             f"Required: {order.product_qty}, Available: {order.product_id.stock_quantity}"
                         )
-
-                    # Step 2: Restore raw item stock
-                    # Step 2: Restore raw item stock
-                    for line in order.manufacturing_order_line_ids:
-                        item = line.item_id
-                        if item.item_type == "inventory":
-                            item.quantity += line.quantity
-                            with self.env.cr.savepoint():
-                                self.env["idil.item"].browse(
-                                    item.id
-                                ).sudo().with_context(
-                                    update_transaction_booking=False, from_unlink=True
-                                ).update(
-                                    {"quantity": item.quantity}
-                                )
-
-                    # Step 3: Reduce finished product stock
-                    # order.product_id.stock_quantity -= order.product_qty
-                    # order.product_id.with_context().write(
-                    #     {"stock_quantity": order.product_id.stock_quantity}
-                    # )
-
-                    # Step 4: Delete item movement records
-                    for line in order.manufacturing_order_line_ids:
-                        related_key = f"idil.manufacturing.order.line,{line.id}"
-                        self.env["idil.item.movement"].search(
-                            [("related_document", "=", related_key)]
-                        ).unlink()
-
-                    # Step 5: Delete product movement
-                    self.env["idil.product.movement"].search(
-                        [("manufacturing_order_id", "=", order.id)]
-                    ).unlink()
-
-                    # Step 6: Delete transaction bookings and lines
-                    booking = self.env["idil.transaction_booking"].search(
-                        [("manufacturing_order_id", "=", order.id)]
-                    )
-                    for b in booking:
-                        b.booking_lines.unlink()
-                        b.unlink()
                     res = super(ManufacturingOrder, self).unlink()
-                    # Step 7: Delete related commission record
-                    self.env["idil.commission"].search(
-                        [("manufacturing_order_id", "=", order.id)]
-                    ).unlink()
-
                 return res
         except Exception as e:
             _logger.error(f"Create transaction failed: {str(e)}")
@@ -1060,7 +1033,6 @@ class ManufacturingOrderLine(models.Model):
     _name = "idil.manufacturing.order.line"
     _description = "Manufacturing Order Line"
     _inherit = ["mail.thread", "mail.activity.mixin"]
-    _order = "id desc"
 
     manufacturing_order_id = fields.Many2one(
         "idil.manufacturing.order",
@@ -1068,6 +1040,9 @@ class ManufacturingOrderLine(models.Model):
         required=True,
         tracking=True,
         ondelete="cascade",  # Add this to enable automatic deletion
+    )
+    company_id = fields.Many2one(
+        related="manufacturing_order_id.company_id", store=True, index=True
     )
 
     item_id = fields.Many2one("idil.item", string="Item", required=True, tracking=True)
@@ -1117,20 +1092,6 @@ class ManufacturingOrderLine(models.Model):
                 record = super(ManufacturingOrderLine, self).create(vals)
                 record._check_min_order_qty()
 
-                # Create an item movement entry
-                if record.item_id:
-                    self.env["idil.item.movement"].create(
-                        {
-                            "item_id": record.item_id.id,
-                            "date": record.manufacturing_order_id.scheduled_start_date,
-                            "quantity": record.quantity * -1,
-                            "source": "Inventory",
-                            "destination": "Manufacturing",
-                            "movement_type": "out",
-                            "related_document": f"idil.manufacturing.order.line,{record.id}",
-                        }
-                    )
-
                 return record
         except Exception as e:
             _logger.error(f"transaction failed: {str(e)}")
@@ -1159,21 +1120,3 @@ class ManufacturingOrderLine(models.Model):
     def _compute_row_total(self):
         for line in self:
             line.row_total = line.quantity * line.cost_price
-
-    def unlink(self):
-        # Loop through each line that is being deleted
-        for line in self:
-            # Check if the line has an item and quantity associated with it
-            if line.item_id and line.quantity:
-                # Adjust the item's stock level, adding back the quantity since the line is being deleted
-                try:
-                    # Increase stock by the quantity of the deleted line
-                    line.item_id.adjust_stock(-line.quantity)
-                except ValidationError as e:
-                    # Handle any validation errors (e.g., stock adjustment issues)
-                    raise ValidationError(
-                        e.args[0]
-                    )  # e.args[0] contains the error message string
-
-        # Call the super method to actually delete the lines after adjusting stock levels
-        return super(ManufacturingOrderLine, self).unlink()

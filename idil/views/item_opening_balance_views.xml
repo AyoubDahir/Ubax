@@ -22,6 +22,8 @@
             <group>
               <field name="date"/>
               <field name="state" readonly="1"/>
+                <field name="currency_id"/>
+              <field name="rate" readonly="1"/>
             </group>
             <group>
               <field name="note" placeholder="Internal note or remarks about this opening balance..."/>
@@ -52,10 +54,13 @@
     <field name="model">idil.item.opening.balance</field>
     <field name="arch" type="xml">
       <tree>
-        <field name="name"/>
-        <field name="total_amount" sum="Total Amount"/>
-        <field name="date"/>
-        <field name="state"/>
+          <field name="company_id"/>
+          <field name="name"/>
+          <field name="currency_id"/>
+          <field name="rate"/>
+          <field name="total_amount" sum="Total Amount"/>
+          <field name="date"/>
+          <field name="state"/>
       </tree>
     </field>
   </record>

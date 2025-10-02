@@ -4,6 +4,7 @@ from odoo import models, fields
 class ProductMovement(models.Model):
     _name = "idil.product.movement"
     _description = "Product Movement History"
+    _inherit = ["mail.thread", "mail.activity.mixin"]
     _order = "id desc"
 
     product_id = fields.Many2one(
@@ -20,9 +21,11 @@ class ProductMovement(models.Model):
     manufacturing_order_id = fields.Many2one(
         "idil.manufacturing.order",
         string="Manufacturing Order",
+        ondelete="cascade",
+        index=True,
         tracking=True,
-        ondelete="cascade",  # Add this to enable automatic deletion
     )
+
     sales_person_id = fields.Many2one(
         "idil.sales.sales_personnel", string="Salesperson"
     )
@@ -42,9 +45,14 @@ class ProductMovement(models.Model):
         string="Product Adjustment",
         ondelete="set null",
     )
+
     sale_order_id = fields.Many2one(
-        "idil.sale.order", string="Sales Order", ondelete="cascade"
+        "idil.sale.order",
+        string="Sales Order",
+        index=True,
+        ondelete="cascade",
     )
+
     transaction_number = fields.Char(string="Transaction Number", tracking=True)
 
     vendor_id = fields.Many2one(

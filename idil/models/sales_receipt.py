@@ -11,6 +11,7 @@ class SalesReceipt(models.Model):
     sales_order_id = fields.Many2one(
         "idil.sale.order",
         string="Sale Order",
+        index=True,
         ondelete="cascade",  # <--- THIS IS THE KEY!
     )
 

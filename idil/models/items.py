@@ -4,6 +4,8 @@ from datetime import datetime
 
 import logging
 
+from odoo.tools import float_compare
+
 _logger = logging.getLogger(__name__)
 
 
@@ -29,8 +31,13 @@ class item(models.Model):
     item_type = fields.Selection(
         selection=ITEM_TYPE_SELECTION, string="Item Type", required=True, tracking=True
     )
+
     quantity = fields.Float(
-        string="Quantity", required=True, tracking=True, default=0.0
+        string="Quantity",
+        compute="_compute_stock_quantity",
+        digits=(16, 5),
+        store=False,  # do NOT store, so it reflects real-time movement
+        help="Quantity in stock, computed from movement history (IN - OUT)",
     )
 
     purchase_date = fields.Date(
@@ -130,15 +137,21 @@ class item(models.Model):
         "idil.item.movement", "item_id", string="Item Movements"
     )
 
+    @api.depends("movement_ids.quantity", "movement_ids.movement_type")
+    def _compute_stock_quantity(self):
+        for product in self:
+            qty_in = sum(
+                m.quantity for m in product.movement_ids if m.movement_type == "in"
+            )
+            qty_out = sum(
+                m.quantity for m in product.movement_ids if m.movement_type == "out"
+            )
+            product.quantity = round(qty_in + qty_out, 5)
+
     # Add a method to update currency_id for existing records
     def update_currency_id(self):
         usd_currency = self.env.ref("base.USD")
         self.search([]).write({"currency_id": usd_currency.id})
-
-    # @api.depends("quantity", "cost_price")
-    # def _compute_total_price(self):
-    #     for item in self:
-    #         item.total_price = round(item.quantity * item.cost_price, 5)
 
     @api.depends_context("uid")
     def compute_item_total_value(self):
@@ -189,18 +202,6 @@ class item(models.Model):
                     "Both purchase and expiration dates must be today or in the future."
                 )
 
-    def adjust_stock(self, qty):
-        """Safely adjust the stock quantity, preventing negative values."""
-        for record in self:
-            new_quantity = record.quantity - qty
-            if new_quantity < 0:
-                # Prevent adjustment to negative. Raise a ValidationError to inform the user.
-                raise ValidationError(
-                    f"Cannot reduce stock below zero for item {record.name}. Adjustment quantity: {qty}, Current stock: {record.quantity}"
-                )
-            else:
-                record.quantity = new_quantity
-
     @api.constrains("quantity", "cost_price")
     def _check_positive_values(self):
         for record in self:
@@ -217,93 +218,6 @@ class item(models.Model):
                 record.message_post(
                     body=f"Item {record.name} needs reordering. Current stock: {record.quantity}"
                 )
-
-    def _create_transaction_booking(self, item):
-        """Helper method to create transaction booking only within this model."""
-
-        # Ensure this transaction is only created when explicitly triggered by this model
-        if self.env.context.get("manual_update"):
-            return  # Skip transaction creation when updating externally
-
-        inventory_opening_balance_source = self.env["idil.transaction.source"].search(
-            [("name", "=", "Inventory Opening Balance")], limit=1
-        )
-        if not inventory_opening_balance_source:
-            raise ValidationError(
-                "Transaction source 'Inventory Opening Balance' not found. "
-                "Please configure the transaction source correctly."
-            )
-
-        equity_account = self.env["idil.chart.account"].search(
-            [("account_type", "=", "Owners Equity"), ("currency_id.name", "=", "USD")],
-            limit=1,
-        )
-        if not equity_account:
-            raise ValidationError(
-                "Equity account not found. Please configure the equity account correctly."
-            )
-
-        # Validate currency matching between debit and credit accounts
-        if item.asset_account_id.currency_id != equity_account.currency_id:
-            raise ValidationError(
-                f"Currency mismatch between debit account '{item.asset_account_id.name}' and credit account "
-                f"'{equity_account.name}'. "
-                f"Debit Account Currency: {item.asset_account_id.currency_id.name}, "
-                f"Credit Account Currency: {equity_account.currency_id.name}."
-            )
-
-        transaction_booking = self.env["idil.transaction_booking"].create(
-            {
-                "transaction_number": self.env["ir.sequence"].next_by_code(
-                    "idil.transaction_booking"
-                ),
-                "reffno": item.name,
-                "trx_date": fields.Date.today(),
-                "amount": item.quantity * item.cost_price,
-                "amount_paid": item.quantity * item.cost_price,
-                "remaining_amount": 0,
-                "payment_status": "paid",
-                "payment_method": "other",
-                "trx_source_id": inventory_opening_balance_source.id,
-            }
-        )
-
-        transaction_booking.booking_lines.create(
-            {
-                "transaction_booking_id": transaction_booking.id,
-                "description": "Opening Balance for Item %s" % item.name,
-                "item_id": item.id,
-                "account_number": item.asset_account_id.id,
-                "transaction_type": "dr",
-                "dr_amount": item.quantity * item.cost_price,
-                "cr_amount": 0,
-                "transaction_date": fields.Date.today(),
-            }
-        )
-
-        transaction_booking.booking_lines.create(
-            {
-                "transaction_booking_id": transaction_booking.id,
-                "description": "Opening Balance for Item %s" % item.name,
-                "item_id": item.id,
-                "account_number": equity_account.id,
-                "transaction_type": "cr",
-                "cr_amount": item.quantity * item.cost_price,
-                "dr_amount": 0,
-                "transaction_date": fields.Date.today(),
-            }
-        )
-
-        self.env["idil.item.movement"].create(
-            {
-                "item_id": item.id,
-                "date": fields.Date.today(),
-                "quantity": item.quantity,
-                "source": "Opening Balance Inventory for Item %s" % item.name,
-                "destination": "Inventory",
-                "movement_type": "in",
-            }
-        )
 
 
 class ItemMovement(models.Model):
@@ -330,6 +244,7 @@ class ItemMovement(models.Model):
             ("idil.manufacturing.order.line", "Manufacturing Order Line"),
             ("idil.stock.adjustment", "Stock Adjustment"),
             ("idil.purchase_return.line", "Purchase Return Line"),
+            ("idil.item.opening.balance.line", "Item Opening Balance Line"),
         ],
         string="Related Document",
     )
@@ -367,29 +282,61 @@ class ItemMovement(models.Model):
         ondelete="cascade",
     )
 
-    @api.model
-    def create(self, vals):
-        # Automatically fill in the vendor_id or product_id based on related_document
-        if vals.get("related_document"):
-            model_name, document_id = vals["related_document"].split(",")
-            if model_name == "idil.purchase_order.line":
-                purchase_order_line = self.env["idil.purchase_order.line"].browse(
-                    int(document_id)
-                )
-                vals["vendor_id"] = purchase_order_line.order_id.vendor_id.id
-                vals["transaction_number"] = (
-                    purchase_order_line.order_id.reffno
-                )  # Assuming transaction number is refno
+    manufacturing_order_line_id = fields.Many2one(
+        "idil.manufacturing.order.line",
+        string="Manufacturing Order Line",
+        ondelete="cascade",  # DB cascades movements when the line is deleted
+        index=True,
+        tracking=True,
+    )
 
-            elif model_name == "idil.manufacturing.order.line":
-                manufacturing_order_line = self.env[
-                    "idil.manufacturing.order.line"
-                ].browse(int(document_id))
-                vals["product_id"] = (
-                    manufacturing_order_line.manufacturing_order_id.product_id.id
-                )
-                vals["transaction_number"] = (
-                    manufacturing_order_line.manufacturing_order_id.name
-                )  # Assuming order name as transaction number
+    manufacturing_order_id = fields.Many2one(
+        "idil.manufacturing.order",
+        string="Manufacturing Order",
+        ondelete="cascade",
+        index=True,
+        tracking=True,
+    )
 
-        return super(ItemMovement, self).create(vals)
+    @api.constrains("item_id", "movement_type", "quantity", "date")
+    def _check_enough_stock_on_out(self):
+        """
+        Prevent negative stock for any OUT movement, evaluated as of the movement's date.
+        Uses your formula: IN + OUT (where OUT is stored negative).
+        """
+        precision = 5  # matches digits=(16,5)
+
+        for m in self:
+            if not m.item_id or m.movement_type != "out":
+                continue
+
+            # Stock balance as of this movement (including it)
+            self.env.cr.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN movement_type = 'in'  THEN quantity ELSE 0 END), 0)
+                + COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)
+                FROM idil_item_movement
+                WHERE item_id = %s
+                AND (date < %s OR (date = %s AND id <= %s))
+            """,
+                (m.item_id.id, m.date, m.date, m.id),
+            )
+            (resulting_balance,) = self.env.cr.fetchone()
+            resulting_balance = resulting_balance or 0.0
+
+            # Balance BEFORE this record = after - this movement qty
+            available_before = resulting_balance - (m.quantity or 0.0)
+
+            if float_compare(resulting_balance, 0.0, precision_digits=precision) < 0:
+                raise ValidationError(
+                    "Insufficient stock for item '{name}' as of {date}. "
+                    "Available: {avail:.5f} | Requested: {req:.5f} | "
+                    "Resulting Balance: {res:.5f}".format(
+                        name=m.item_id.name,
+                        date=m.date,
+                        avail=round(available_before, precision),
+                        req=round(m.quantity or 0.0, precision),
+                        res=round(resulting_balance, precision),
+                    )
+                )

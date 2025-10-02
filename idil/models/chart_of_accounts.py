@@ -10,6 +10,9 @@ class AccountHeader(models.Model):
     _inherit = ["mail.thread", "mail.activity.mixin"]
     _description = "Idil Chart of Accounts Header"
 
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
     code = fields.Char(string="Header Code", required=True)
     name = fields.Char(string="Header Name", required=True)
     company_id = fields.Many2one(
@@ -517,6 +520,9 @@ class AccountSubHeader(models.Model):
     _description = "Idil Chart of Accounts Sub Header"
     _order = "id desc"
 
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
     sub_header_code = fields.Char(string="Sub Header Code", required=True)
     name = fields.Char(string="Sub Header Name", required=True)
     header_id = fields.Many2one("idil.chart.account.header", string="Header")
@@ -546,6 +552,9 @@ class Account(models.Model):
     _inherit = ["mail.thread", "mail.activity.mixin"]
     _description = "Idil Chart of Accounts"
 
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
     SIGN_SELECTION = [
         ("Dr", "Dr"),
         ("Cr", "Cr"),

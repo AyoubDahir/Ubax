@@ -12,7 +12,6 @@ class CustomerSaleOrder(models.Model):
     _name = "idil.customer.sale.order"
     _inherit = ["mail.thread", "mail.activity.mixin"]
     _description = "CustomerSale Order"
-    _order = "id desc"
 
     name = fields.Char(string="Sales Reference", tracking=True)
 
@@ -793,7 +792,6 @@ class CustomerSaleOrderLine(models.Model):
     _name = "idil.customer.sale.order.line"
     _inherit = ["mail.thread", "mail.activity.mixin"]
     _description = "CustomerSale Order Line"
-    _order = "id desc"
 
     order_id = fields.Many2one("idil.customer.sale.order", string="Sale Order")
     product_id = fields.Many2one("my_product.product", string="Product")

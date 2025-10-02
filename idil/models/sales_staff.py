@@ -205,6 +205,14 @@ class SalespersonTransaction(models.Model):
     )
     date = fields.Date(string="Transaction Date", default=fields.Date.today)
     order_id = fields.Many2one("idil.sale.order", string="Sale Order")
+
+    sale_order_id = fields.Many2one(
+        "idil.sale.order",
+        string="Sales Order",
+        index=True,
+        ondelete="cascade",
+    )
+
     transaction_type = fields.Selection(
         [("in", "In"), ("out", "Out")], string="Transaction Type", required=True
     )

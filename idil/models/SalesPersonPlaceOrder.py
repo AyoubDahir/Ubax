@@ -50,14 +50,21 @@ class SalespersonOrder(models.Model):
 
     def write(self, vals):
         for record in self:
-            # Prevent update if a related sale order exists
-            sale_orders = self.env["idil.sale.order"].search(
-                [("salesperson_order_id", "=", record.id)]
-            )
-            if sale_orders:
-                raise UserError(
-                    "This Salesperson Order is already linked to a Sales Order and cannot be edited."
+            # Allow pure state change (e.g., SO confirming this place order)
+            only_state_change = set(vals.keys()) <= {"state"}
+            if not only_state_change:
+                # If not a pure state change, block edits when already linked to a confirmed SO
+                sale_orders = self.env["idil.sale.order"].search(
+                    [
+                        ("salesperson_order_id", "=", record.id),  # <- FIXED COMMA HERE
+                        ("state", "=", "confirmed"),
+                    ],
+                    limit=1,
                 )
+                if sale_orders:
+                    raise UserError(
+                        "This Salesperson Order is already linked to a confirmed Sales Order and cannot be edited."
+                    )
         return super(SalespersonOrder, self).write(vals)
 
     def unlink(self):

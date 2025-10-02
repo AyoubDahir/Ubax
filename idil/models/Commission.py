@@ -20,9 +20,9 @@ class Commission(models.Model):
     manufacturing_order_id = fields.Many2one(
         "idil.manufacturing.order",
         string="Manufacturing Order",
-        required=True,
+        ondelete="cascade",
+        index=True,
         tracking=True,
-        ondelete="cascade",  # ✅ Automatically delete commission when MO is deleted
     )
 
     employee_id = fields.Many2one(
