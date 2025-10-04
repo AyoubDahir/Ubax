@@ -13,19 +13,19 @@ class CustomerSaleOrder(models.Model):
     _inherit = ["mail.thread", "mail.activity.mixin"]
     _description = "CustomerSale Order"
 
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
     name = fields.Char(string="Sales Reference", tracking=True)
-
     customer_id = fields.Many2one(
         "idil.customer.registration", string="Customer", required=True
     )
     # Add the field to link to the Customer Place Order
-
     customer_place_order_id = fields.Many2one(
         "idil.customer.place.order",
         string="Customer Place Order",
         domain="[('customer_id', '=', customer_id), ('state', '=', 'draft')]",
     )
-
     order_date = fields.Datetime(string="Order Date", default=fields.Datetime.now)
     order_lines = fields.One2many(
         "idil.customer.sale.order.line", "order_id", string="Order Lines"
@@ -37,7 +37,6 @@ class CustomerSaleOrder(models.Model):
         [("draft", "Draft"), ("confirmed", "Confirmed"), ("cancel", "Cancelled")],
         default="confirmed",
     )
-
     # Currency fields
     currency_id = fields.Many2one(
         "res.currency",
@@ -213,21 +212,31 @@ class CustomerSaleOrder(models.Model):
                     "The total paid amount cannot exceed the order total."
                 )
 
-    @api.depends("currency_id")
+    @api.depends("currency_id", "order_date", "company_id")
     def _compute_exchange_rate(self):
+        Rate = self.env["res.currency.rate"].sudo()
         for order in self:
-            if order.currency_id:
-                rate = self.env["res.currency.rate"].search(
-                    [
-                        ("currency_id", "=", order.currency_id.id),
-                        ("name", "=", fields.Date.today()),
-                        ("company_id", "=", self.env.company.id),
-                    ],
-                    limit=1,
-                )
-                order.rate = rate.rate if rate else 0.0
-            else:
-                order.rate = 0.0
+            order.rate = 0.0
+            if not order.currency_id:
+                continue
+
+            doc_date = (
+                fields.Date.to_date(order.order_date)
+                if order.order_date
+                else fields.Date.today()
+            )
+
+            rate_rec = Rate.search(
+                [
+                    ("currency_id", "=", order.currency_id.id),
+                    ("name", "<=", doc_date),
+                    ("company_id", "in", [order.company_id.id, False]),
+                ],
+                order="company_id desc, name desc",
+                limit=1,
+            )
+
+            order.rate = rate_rec.rate or 0.0
 
     @api.model
     def create(self, vals):
@@ -358,6 +367,7 @@ class CustomerSaleOrder(models.Model):
                             "Sales_order_number": order.id,
                             "payment_method": "bank_transfer",  # Assuming default payment method; adjust as needed
                             "payment_status": "pending",  # Assuming initial payment status; adjust as needed
+                            "rate": order.rate,
                             "trx_date": fields.Date.context_today(self),
                             "amount": order.order_total,
                             # Include other necessary fields
