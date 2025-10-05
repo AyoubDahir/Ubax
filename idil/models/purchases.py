@@ -12,7 +12,6 @@ class PurchaseOrderLine(models.Model):
     _name = "idil.purchase_order.line"
     _inherit = ["mail.thread", "mail.activity.mixin"]
     _description = "Purchase Order"
-    _order = "id desc"
 
     order_id = fields.Many2one(
         "idil.purchase_order", string="Order", ondelete="cascade"
@@ -251,7 +250,7 @@ class PurchaseOrder(models.Model):
                     {
                         "item_id": line.item_id.id,
                         "purchase_order_line_id": line.id,
-                        "date": fields.Date.today(),
+                        "date": order.purchase_date,
                         "quantity": line.quantity,
                         "source": "Vendor",
                         "destination": "Inventory",
