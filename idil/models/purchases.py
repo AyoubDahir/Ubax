@@ -268,6 +268,7 @@ class PurchaseOrder(models.Model):
                 item = line.item_id
                 quantity = line.quantity
                 cost_price = line.cost_price
+                line_expiry = line.expiration_date  # ← NEW: grab line expiry
 
                 if not item:
                     continue
@@ -287,7 +288,11 @@ class PurchaseOrder(models.Model):
                     else:
                         new_cost_price = cost_price
 
-                    update_vals = {"quantity": new_quantity}
+                    update_vals = {
+                        "quantity": new_quantity,
+                        "expiration_date": line_expiry,  # ← NEW: always set to line’s date
+                    }
+
                     if cost_price != 0:
                         update_vals["cost_price"] = new_cost_price
 
