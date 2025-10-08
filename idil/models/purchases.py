@@ -216,6 +216,32 @@ class PurchaseOrder(models.Model):
         default="confirmed",
         tracking=True,
     )
+    # 👇 Will change immediately when account changes; also searchable/groupable (store=True)
+    currency_amount_id = fields.Many2one(
+        "res.currency",
+        string="Currency",
+        compute="_compute_currency_amount",
+        store=True,
+    )
+
+    @api.depends(
+        "account_number", "account_number.currency_id", "account_number.company_id"
+    )
+    def _compute_currency_amount(self):
+        """Pick account currency; fallback to the account's company or env company."""
+        for rec in self:
+            rec.currency_amount_id = rec.account_number.currency_id or (
+                rec.account_number.company_id.currency_id
+                if rec.account_number and rec.account_number.company_id
+                else rec.env.company.currency_id
+            )
+
+    @api.onchange("account_number")
+    def _onchange_account_number(self):
+        """Make UI update immediately while editing (esp. in O2M inline)."""
+        self.currency_amount_id = (
+            self.account_number.currency_id.id if self.account_number else False
+        )
 
     @api.depends("currency_id", "purchase_date", "company_id")
     def _compute_exchange_rate(self):
