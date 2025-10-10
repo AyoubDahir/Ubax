@@ -1059,7 +1059,6 @@ class ManufacturingOrderLine(models.Model):
         required=True,
         tracking=True,
         store=True,
-        readonly=True,
     )
 
     row_total = fields.Float(
