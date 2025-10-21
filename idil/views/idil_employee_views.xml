@@ -14,6 +14,8 @@
                     <field name="user_id" optional="show"/>
 
                     <field name="name" optional="show"/>
+                    <field name="salary_paid_count" optional="show"/>
+                    
                     <field name="employee_type" optional="hide"/>
                     <field name="department_id" optional="show"/>
                     <field name="position_id" optional="show"/>

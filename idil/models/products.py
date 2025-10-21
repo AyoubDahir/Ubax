@@ -72,7 +72,7 @@ class Product(models.Model):
         string="Income Account",
         help="Account to report Sales Income",
         required=True,
-        domain="[('code', 'like', '4')]",  # Domain to filter accounts starting with '4'
+        domain="[('header_name', '=', 'Income')]",  # Domain to filter accounts starting with '4'
     )
 
     asset_currency_id = fields.Many2one(
@@ -88,7 +88,7 @@ class Product(models.Model):
         help="Account to report Asset of this item",
         required=True,
         tracking=True,
-        domain="[('code', 'like', '1'), ('currency_id', '=', asset_currency_id)]",
+        domain="[('header_name', '=', 'Assets'), ('currency_id', '=', asset_currency_id)]",
         # Domain to filter accounts starting with '1' and in USD
     )
 
@@ -107,7 +107,7 @@ class Product(models.Model):
     account_id = fields.Many2one(
         "idil.chart.account",
         string="Commission Account",
-        domain="[('account_type', 'like', 'commission'), ('code', 'like', '2%'), "
+        domain="[('account_type', 'like', 'commission'), ('header_name', '=', 'Liabilities') , "
         "('currency_id', '=', currency_id)]",
     )
 
@@ -121,14 +121,14 @@ class Product(models.Model):
     account_cogs_id = fields.Many2one(
         "idil.chart.account",
         string="Cost of Goods Sold (Expense)",
-        domain="[('account_type', 'like', 'COGS'), ('code', 'like', '5%'), "
+        domain="[('account_type', 'like', 'COGS'), ('header_name', '=', 'Expenses'), "
         "('currency_id', '=', currency_cogs_id)]",
     )
 
     account_adjustment_id = fields.Many2one(
         "idil.chart.account",
         string="Adjustment Account (Expense)",
-        domain="[('account_type', 'like', 'Adjustment'), ('code', 'like', '5%'), "
+        domain="[('account_type', 'like', 'Adjustment'), ('header_name', '=', 'Expenses'), "
         "('currency_id', '=', currency_cogs_id)]",
     )
 
@@ -143,7 +143,7 @@ class Product(models.Model):
     sales_account_id = fields.Many2one(
         "idil.chart.account",
         string="Sales Commission Account",
-        domain="[('account_type', 'like', 'commission'), ('code', 'like', '5%'), "
+        domain="[('account_type', 'like', 'commission'), ('header_name', '=', 'Expenses'), "
         "('currency_id', '=', sales_currency_id)]",
     )
     is_sales_commissionable = fields.Boolean(string="Commissionable", default=False)
@@ -160,7 +160,7 @@ class Product(models.Model):
     sales_discount_id = fields.Many2one(
         "idil.chart.account",
         string="Sales Discount Account",
-        domain="[('account_type', 'like', 'discount'), ('code', 'like', '5%'), "
+        domain="[('account_type', 'like', 'discount'), ('header_name', '=', 'Expenses'), "
         "('currency_id', '=', discount_currency_id)]",
     )
     # New One2many field to track product movement history

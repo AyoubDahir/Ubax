@@ -4,11 +4,13 @@ from odoo.exceptions import ValidationError, UserError
 
 class SalespersonOrder(models.Model):
     _name = "idil.salesperson.place.order"
+    _inherit = ["mail.thread", "mail.activity.mixin"]
     _description = "Salesperson Place Order"
     _order = "id desc"
 
+    name = fields.Char(string="Order Reference", tracking=True)
     salesperson_id = fields.Many2one(
-        "idil.sales.sales_personnel", string="Salesperson", required=True
+        "idil.sales.sales_personnel", string="Sales Team", required=True
     )
     order_date = fields.Datetime(string="Order Date", default=fields.Datetime.now)
     order_lines = fields.One2many(

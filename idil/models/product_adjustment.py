@@ -205,7 +205,7 @@ class ProductAdjustment(models.Model):
                             "adjustment_id": rec.id,
                             "product_id": rec.product_id.id,
                             "transaction_booking_id": transaction_booking.id,
-                            "description": f"Stock Adjustment: {rec.product_id.name} ({rec.reason_id or ''})",
+                            "description": f"Stock Adjustment: {rec.product_id.name}",
                             "transaction_type": "dr",
                             "dr_amount": 0.0,
                             "cr_amount": rec.adjustment_amount,

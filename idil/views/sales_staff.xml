@@ -4,7 +4,7 @@
         <field name="name">sales_personnel.form</field>
         <field name="model">idil.sales.sales_personnel</field>
         <field name="arch" type="xml">
-            <form string="Sales Personnel Form">
+            <form string="Sales Team Form">
                 <sheet>
                     <div class="oe_title">
                         <h1>

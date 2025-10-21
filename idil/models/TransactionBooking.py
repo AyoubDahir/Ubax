@@ -673,6 +673,117 @@ class TransactionBookingline(models.Model):
             "target": "new",
         }
 
+    # def compute_company_trial_balance(
+    #     self, report_currency_id, company_id, as_of_date, exact_day=False
+    # ):
+    #     # --- normalize to a pure date (no timezone issues) ---
+    #     as_of_date = fields.Date.to_date(as_of_date)
+
+    #     Currency = self.env["res.currency"]
+    #     Account = self.env["idil.chart.account"]
+    #     TrialBal = self.env["idil.company.trial.balance"]
+
+    #     # Use the report currency if provided, else company currency
+    #     report_currency = report_currency_id or company_id.currency_id
+
+    #     # --- clear only my previous rows (and this company if field exists) ---
+    #     clear_domain = [("create_uid", "=", self.env.uid)]
+    #     if "company_id" in TrialBal._fields:
+    #         clear_domain.append(("company_id", "=", company_id.id))
+    #     TrialBal.search(clear_domain).unlink()
+
+    #     # --- fetch raw lines using ONLY transaction_date ---
+    #     comparator = "=" if exact_day else "<="
+    #     self.env.cr.execute(
+    #         f"""
+    #         SELECT
+    #             tb.account_number,
+    #             tb.dr_amount,
+    #             tb.cr_amount,
+    #             tb.transaction_date::date AS tdate,
+    #             ca.currency_id
+    #         FROM idil_transaction_bookingline tb
+    #         JOIN idil_chart_account ca ON tb.account_number = ca.id
+    #         WHERE tb.company_id = %s
+    #         AND tb.transaction_date {comparator} %s::date
+    #         AND ca.name != 'Exchange Clearing Account'
+    #     """,
+    #         (company_id.id, as_of_date),
+    #     )
+    #     rows = self.env.cr.dictfetchall()
+
+    #     # --- aggregate in report currency, converting at tdate (transaction_date) ---
+    #     balances = {}  # {account_id: {'dr': x, 'cr': y}}
+    #     for r in rows:
+    #         acc_id = r["account_number"]
+    #         tdate = r["tdate"]
+    #         src_cur = Currency.browse(r["currency_id"])
+    #         dr_src = r["dr_amount"] or 0.0
+    #         cr_src = r["cr_amount"] or 0.0     10700     10500
+
+    #         dr_rep = src_cur._convert(
+    #             dr_src, report_currency, company_id, tdate, round=False
+    #         )
+    #         cr_rep = src_cur._convert(
+    #             cr_src, report_currency, company_id, tdate, round=False
+    #         )
+
+    #         b = balances.setdefault(acc_id, {"dr": 0.0, "cr": 0.0})
+    #         b["dr"] += dr_rep
+    #         b["cr"] += cr_rep
+
+    #     # --- write detail lines + grand total ---
+    #     grand_dr = grand_cr = 0.0
+    #     for acc_id, t in balances.items():
+    #         net = t["dr"] - t["cr"]
+    #         if abs(net) < 1e-9:
+    #             continue  # skip zero-net
+
+    #         dr_bal = report_currency.round(net if net > 0 else 0.0)
+    #         cr_bal = report_currency.round(-net if net < 0 else 0.0)
+
+    #         acc = Account.browse(acc_id)
+    #         vals = {
+    #             "account_number": acc.id,
+    #             "header_name": acc.header_name,
+    #             "currency_id": report_currency.id,
+    #             "dr_balance": dr_bal,
+    #             "cr_balance": cr_bal,
+    #         }
+    #         if "company_id" in TrialBal._fields:
+    #             vals["company_id"] = company_id.id
+    #         if "as_of_date" in TrialBal._fields:
+    #             vals["as_of_date"] = as_of_date
+    #         TrialBal.create(vals)
+
+    #         grand_dr += dr_bal
+    #         grand_cr += cr_bal
+
+    #     total_vals = {
+    #         "account_number": False,
+    #         "currency_id": report_currency.id,
+    #         "label": (
+    #             f"Grand Total (as of {as_of_date})"
+    #             if not exact_day
+    #             else f"Grand Total ({as_of_date})"
+    #         ),
+    #         "dr_balance": grand_dr,
+    #         "cr_balance": grand_cr,
+    #     }
+    #     if "company_id" in TrialBal._fields:
+    #         total_vals["company_id"] = company_id.id
+    #     if "as_of_date" in TrialBal._fields:
+    #         total_vals["as_of_date"] = as_of_date
+    #     TrialBal.create(total_vals)
+
+    #     return {
+    #         "type": "ir.actions.act_window",
+    #         "name": f"Company Trial Balance — {as_of_date}",
+    #         "view_mode": "tree",
+    #         "res_model": "idil.company.trial.balance",
+    #         "domain": clear_domain,  # show only the rows we just created
+    #         "target": "new",
+    #     }
     def compute_company_trial_balance(
         self, report_currency_id, company_id, as_of_date, exact_day=False
     ):
@@ -694,6 +805,7 @@ class TransactionBookingline(models.Model):
 
         # --- fetch raw lines using ONLY transaction_date ---
         comparator = "=" if exact_day else "<="
+        # NOTE: include tb.rate in select
         self.env.cr.execute(
             f"""
             SELECT
@@ -701,7 +813,8 @@ class TransactionBookingline(models.Model):
                 tb.dr_amount,
                 tb.cr_amount,
                 tb.transaction_date::date AS tdate,
-                ca.currency_id
+                ca.currency_id,
+                tb.rate
             FROM idil_transaction_bookingline tb
             JOIN idil_chart_account ca ON tb.account_number = ca.id
             WHERE tb.company_id = %s
@@ -712,7 +825,8 @@ class TransactionBookingline(models.Model):
         )
         rows = self.env.cr.dictfetchall()
 
-        # --- aggregate in report currency, converting at tdate (transaction_date) ---
+        # --- aggregate in report currency, converting at tdate (transaction_date)
+        #     but prefer per-transaction tb.rate when available ---
         balances = {}  # {account_id: {'dr': x, 'cr': y}}
         for r in rows:
             acc_id = r["account_number"]
@@ -720,13 +834,23 @@ class TransactionBookingline(models.Model):
             src_cur = Currency.browse(r["currency_id"])
             dr_src = r["dr_amount"] or 0.0
             cr_src = r["cr_amount"] or 0.0
+            tx_rate = r.get("rate")  # per-transaction rate from tb.rate (may be None)
 
-            dr_rep = src_cur._convert(
-                dr_src, report_currency, company_id, tdate, round=False
-            )
-            cr_rep = src_cur._convert(
-                cr_src, report_currency, company_id, tdate, round=False
-            )
+            # If transaction currency equals report currency -> no conversion
+            if src_cur.id == report_currency.id:
+                dr_rep = float(dr_src)
+                cr_rep = float(cr_src)
+            # If a tx-specific rate exists -> use it (assumes rate converts src -> report)
+            elif tx_rate not in (None, ""):
+                # tx_rate might be a Decimal/float/string; coerce to float safely
+                try:
+                    rate_val = float(tx_rate)
+                except (TypeError, ValueError):
+                    rate_val = None
+
+                if rate_val is not None:
+                    dr_rep = float(dr_src) / rate_val
+                    cr_rep = float(cr_src) / rate_val
 
             b = balances.setdefault(acc_id, {"dr": 0.0, "cr": 0.0})
             b["dr"] += dr_rep

@@ -84,14 +84,14 @@ class item(models.Model):
         help="Account to report purchases of this item",
         required=True,
         tracking=True,
-        domain="[('account_type', 'like', 'COGS'), ('currency_id', '=', currency_id)]",
+        domain="[('account_type', 'like', 'COGS'), ('currency_id', '=', currency_id), ('header_name', '=', 'Expenses')]",
     )
     sales_account_id = fields.Many2one(
         "idil.chart.account",
         string="Sales Account",
         help="Account to report sales of this item",
         tracking=True,
-        domain="[('code', 'like', '4'), ('currency_id', '=', currency_id)]",
+        domain="[('header_name', '=', 'Income'), ('currency_id', '=', currency_id)]",
         # Domain to filter accounts starting with '4' and in USD
     )
     asset_account_id = fields.Many2one(
@@ -100,7 +100,7 @@ class item(models.Model):
         help="Account to report Asset of this item",
         required=True,
         tracking=True,
-        domain="[('code', 'like', '1'), ('currency_id', '=', currency_id)]",
+        domain="[('header_name', '=', 'Assets'),('currency_id', '=', currency_id)]",
         # Domain to filter accounts starting with '1' and in USD
     )
 
@@ -110,7 +110,7 @@ class item(models.Model):
         help="Account to report adjustment of this item",
         required=True,
         tracking=True,
-        domain="[('code', 'like', '1'), ('code', 'like', '5'), ('currency_id', '=', currency_id)]",
+        domain="['|', ('header_name', '=', 'Assets'), ('header_name', '=', 'Expenses'), ('currency_id', '=', currency_id), ('account_type', '=', 'Adjustment' )]",
         # Domain to filter accounts starting with '1' and in USD
     )
 

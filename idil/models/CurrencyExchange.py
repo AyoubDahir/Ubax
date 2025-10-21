@@ -7,8 +7,10 @@ from odoo.exceptions import ValidationError
 class CurrencyExchange(models.Model):
     _name = "idil.currency.exchange"
     _description = "Currency Exchange"
-    _order = "id desc"
 
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
     name = fields.Char(
         string="Reference", required=True, default="New", copy=False, readonly=True
     )
@@ -16,21 +18,11 @@ class CurrencyExchange(models.Model):
     sourcecy_currency_id = fields.Many2one(
         "res.currency", string="Source Currency", required=True
     )
-    targetcy_currency_id = fields.Many2one(
-        "res.currency", string="Target Currency", required=True
-    )
-
     source_account_id = fields.Many2one(
         "idil.chart.account",
         string="Source Account",
         required=True,
         domain="[('currency_id', '=', sourcecy_currency_id)]",
-    )
-    target_account_id = fields.Many2one(
-        "idil.chart.account",
-        string="Target Account",
-        required=True,
-        domain="[('currency_id', '=', targetcy_currency_id)]",
     )
     source_currency_id = fields.Many2one(
         "res.currency",
@@ -38,22 +30,27 @@ class CurrencyExchange(models.Model):
         readonly=True,
         string="Source Account Currency",
     )
+    source_account_balance = fields.Float(
+        string="Account Balance",
+        compute="_compute_account_balances",
+        currency_field="source_currency_id",
+    )
+    # ______________________________________________________________________________________________________________
+
+    targetcy_currency_id = fields.Many2one(
+        "res.currency", string="Target Currency", required=True
+    )
+    target_account_id = fields.Many2one(
+        "idil.chart.account",
+        string="Target Account",
+        required=True,
+        domain="[('currency_id', '=', targetcy_currency_id)]",
+    )
     target_currency_id = fields.Many2one(
         "res.currency",
         related="target_account_id.currency_id",
         readonly=True,
         string="Target Account Currency",
-    )
-    amount = fields.Float(string="Amount in Source Currency", required=True)
-
-    transaction_date = fields.Date(
-        string="Transaction Date", default=fields.Date.context_today, required=True
-    )
-
-    source_account_balance = fields.Float(
-        string="Account Balance",
-        compute="_compute_account_balances",
-        currency_field="source_currency_id",
     )
     target_account_balance = fields.Float(
         string="Account Balance",
@@ -61,6 +58,19 @@ class CurrencyExchange(models.Model):
         currency_field="target_currency_id",
     )
 
+    # ______________________________________________________________________________________________________________
+
+    amount = fields.Float(string="Amount in Source Currency", required=True)
+
+    amount_when_converted = fields.Float(
+        string="Amount in Target Currency",
+        compute="_compute_amount_when_converted",
+        currency_field="target_currency_id",
+    )
+
+    transaction_date = fields.Date(
+        string="Transaction Date", required=True, default=fields.Date.context_today
+    )
     state = fields.Selection(
         [("draft", "Draft"), ("confirmed", "Confirmed")],
         default="draft",
@@ -68,7 +78,8 @@ class CurrencyExchange(models.Model):
         tracking=True,
         readonly=True,
     )
-    currencycy_id = fields.Many2one(
+
+    currency_id = fields.Many2one(
         "res.currency",
         string="Currency",
         required=True,
@@ -77,30 +88,45 @@ class CurrencyExchange(models.Model):
         ),
         readonly=True,
     )
-    exchange_rate = fields.Float(
+
+    rate = fields.Float(
         string="Exchange Rate",
         compute="_compute_exchange_rate",
         store=True,
-        readonly=True,
-        required=True,
-        help="Exchange rate from source to target currency",
+        readonly=False,
+        tracking=True,
     )
 
-    @api.depends("currencycy_id")
+    @api.depends("amount", "rate")
+    def _compute_amount_when_converted(self):
+        for rec in self:
+            rec.amount_when_converted = rec.amount * rec.rate
+
+    @api.depends("currency_id", "transaction_date", "company_id")
     def _compute_exchange_rate(self):
+        Rate = self.env["res.currency.rate"].sudo()
         for order in self:
-            if order.currencycy_id:
-                exchange_rate = self.env["res.currency.rate"].search(
-                    [
-                        ("currency_id", "=", order.currencycy_id.id),
-                        ("name", "=", fields.Date.today()),
-                        ("company_id", "=", self.env.company.id),
-                    ],
-                    limit=1,
-                )
-                order.exchange_rate = exchange_rate.rate if exchange_rate else 0.0
-            else:
-                order.exchange_rate = 0.0
+            order.rate = 0.0
+            if not order.currency_id:
+                continue
+
+            doc_date = (
+                fields.Date.to_date(order.transaction_date)
+                if order.transaction_date
+                else fields.Date.today()
+            )
+
+            rate_rec = Rate.search(
+                [
+                    ("currency_id", "=", order.currency_id.id),
+                    ("name", "<=", doc_date),
+                    ("company_id", "in", [order.company_id.id, False]),
+                ],
+                order="company_id desc, name desc",
+                limit=1,
+            )
+
+            order.rate = rate_rec.rate or 0.0
 
     @api.onchange("sourcecy_currency_id")
     def _onchange_source_currency_id(self):
@@ -199,10 +225,10 @@ class CurrencyExchange(models.Model):
             # Calculate the equivalent amount in the target currency
             if record.target_currency_id.name == "SL":
                 # If the target currency is Somali Shillings, multiply
-                equivalent_amount_target = record.amount * record.exchange_rate
+                equivalent_amount_target = record.amount * record.rate
             elif record.target_currency_id.name == "USD":
                 # Otherwise, divide for other currencies
-                equivalent_amount_target = record.amount / record.exchange_rate
+                equivalent_amount_target = record.amount / record.rate
             else:
                 raise ValidationError("Unsupported target currency.")
 
@@ -240,6 +266,7 @@ class CurrencyExchange(models.Model):
                         "reffno": record.name,
                         "currency_exchange_id": record.id,
                         "trx_date": record.transaction_date,
+                        "rate": record.rate,
                         "amount": record.amount,
                         "payment_status": "paid",
                         "booking_lines": [
@@ -323,9 +350,9 @@ class CurrencyExchange(models.Model):
 
             # Re-perform the exchange using updated values
             equivalent_amount_target = (
-                record.amount * record.exchange_rate
+                record.amount * record.rate
                 if record.target_currency_id.name == "SL"
-                else record.amount / record.exchange_rate
+                else record.amount / record.rate
             )
 
             source_clearing_account = self.env["idil.chart.account"].search(
@@ -374,6 +401,7 @@ class CurrencyExchange(models.Model):
                     "reffno": record.name,
                     "currency_exchange_id": record.id,
                     "trx_date": record.transaction_date,
+                    "rate": record.rate,
                     "amount": record.amount,
                     "payment_status": "paid",
                     "booking_lines": [

@@ -27,10 +27,14 @@
                                     <field name="request_date"/>
                                     <field name="account_id"/>
                                     <field name="currency_id"/>
+                                    <field name="rate"/>
                                     <field name="employee_salary"/>
                                 </group>
                                 <group>
                                     <field name="advance_amount"/>
+                                    <field name="deducted_amount"/>
+                                    <field name="remaining_amount"/>
+                                    
                                     <field name="remaining_salary"/>
                                 </group>
                             </group>
@@ -58,12 +62,14 @@
         <field name="model">idil.employee.salary.advance</field>
         <field name="arch" type="xml">
             <tree>
+                <field name="currency_id"/>
                 <field name="employee_id"/>
                 <field name="request_date"/>
                 <field name="currency_id"/>
-                <field name="employee_salary"/>
-                <field name="advance_amount"/>
-                <field name="remaining_salary"/>
+                <field name="employee_salary" sum="total"/>
+                <field name="advance_amount" sum="total"/>
+                <field name="deducted_amount" sum="total"/>
+                <field name="remaining_amount" sum="total"/>
                 <field name="state" widget="statusbar" statusbar_visible="draft,approved,rejected,deducted"/>
             </tree>
         </field>

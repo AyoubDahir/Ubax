@@ -25,8 +25,9 @@
                 <field name="item_id"/>
                 <field name="adjustment_type"/>
                 <field name="adjustment_qty"/>
-                <field name="cost_price" widget="monetary" options="{'currency_field': 'currency_id'}"/>
-                <field name="total_amount" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                 <field name="currency_id"/>
+                <field name="cost_price" widget="monetary"   options="{'currency_field': 'currency_id'}"/>
+                <field name="total_amount" widget="monetary" sum="total"  options="{'currency_field': 'currency_id'}"/>
                 <field name="reason_id"/>
             </tree>
         </field>
@@ -52,6 +53,8 @@
 
                         <group string="Adjustment Info" colspan="2">
                             <field name="adjustment_date"/>
+                            <field name="currency_id"/>
+                            <field name="rate"/>
                             <field name="total_amount" readonly="1" widget="monetary" options="{'currency_field': 'currency_id'}"/>
                             <field name="reason_id"/>
                         </group>

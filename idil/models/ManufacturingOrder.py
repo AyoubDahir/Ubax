@@ -460,7 +460,7 @@ class ManufacturingOrder(models.Model):
 
                     if not source_clearing_account or not target_clearing_account:
                         raise ValidationError(
-                            "Exchange clearing accounts are required for currency conversion."
+                            "Exchange Clearing Account are required for currency conversion."
                         )
 
                     # Debit line for increasing product stock

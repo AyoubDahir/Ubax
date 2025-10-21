@@ -14,6 +14,9 @@ class ProductOpeningBalance(models.Model):
     _inherit = ["mail.thread", "mail.activity.mixin"]
     _order = "id desc"
 
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
     name = fields.Char(string="Reference", readonly=True, default="New")
     date = fields.Date(string="Date", required=True)
     state = fields.Selection(
@@ -59,37 +62,29 @@ class ProductOpeningBalance(models.Model):
         for rec in self:
             rec.total_amount = sum(rec.line_ids.mapped("total"))
 
-    @api.depends("currency_id")
+    @api.depends("currency_id", "date", "company_id")
     def _compute_exchange_rate(self):
+        Rate = self.env["res.currency.rate"].sudo()
         for order in self:
-            if order.currency_id:
-                rate = self.env["res.currency.rate"].search(
-                    [
-                        ("currency_id", "=", order.currency_id.id),
-                        ("name", "=", fields.Date.today()),
-                        ("company_id", "=", self.env.company.id),
-                    ],
-                    limit=1,
-                )
-                order.rate = rate.rate if rate else 0.0
-            else:
-                order.rate = 0.0
+            order.rate = 0.0
+            if not order.currency_id:
+                continue
 
-    @api.constrains("currency_id")
-    def _check_exchange_rate_exists(self):
-        for order in self:
-            if order.currency_id:
-                rate = self.env["res.currency.rate"].search_count(
-                    [
-                        ("currency_id", "=", order.currency_id.id),
-                        ("name", "=", fields.Date.today()),
-                        ("company_id", "=", self.env.company.id),
-                    ]
-                )
-                if rate == 0:
-                    raise exceptions.ValidationError(
-                        "No exchange rate found for today. Please insert today's rate before saving."
-                    )
+            doc_date = (
+                fields.Date.to_date(order.date) if order.date else fields.Date.today()
+            )
+
+            rate_rec = Rate.search(
+                [
+                    ("currency_id", "=", order.currency_id.id),
+                    ("name", "<=", doc_date),
+                    ("company_id", "in", [order.company_id.id, False]),
+                ],
+                order="company_id desc, name desc",
+                limit=1,
+            )
+
+            order.rate = rate_rec.rate or 0.0
 
     @api.model_create_multi
     def create(self, vals_list):

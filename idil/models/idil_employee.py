@@ -141,6 +141,33 @@ class IdilEmployee(models.Model):
     )
     customer_id = fields.Many2one("idil.customer.registration", string="Customer")
 
+    salary_paid_count = fields.Integer(
+        string=" Paid Salaries",
+        compute="_compute_salary_paid_count",
+        store=False,
+    )
+
+    @api.depends()
+    def _compute_salary_paid_count(self):
+        """Compute the number of salary payments made to this employee in the current month."""
+        today = date.today()
+        first_day = today.replace(day=1)
+        last_day = today.replace(
+            day=28
+        )  # We'll filter by month only, so day range is flexible
+
+        for emp in self:
+            # Assuming salary records are in 'idil.employee.salary' and have 'employee_id' and 'payment_date'
+            salary_model = self.env["idil.employee.salary"]
+            count = salary_model.search_count(
+                [
+                    ("employee_id", "=", emp.id),
+                    ("salary_date", ">=", first_day),
+                    ("salary_date", "<=", today),
+                ]
+            )
+            emp.salary_paid_count = count
+
     @api.depends("contract_start_date", "contract_end_date")
     def _compute_status(self):
         today = date.today()

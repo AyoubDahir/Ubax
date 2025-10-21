@@ -76,6 +76,33 @@ class ProductPurchaseOrder(models.Model):
         tracking=True,
     )
 
+    @api.onchange("payment_method", "vendor_id")
+    def _onchange_payment_method(self):
+
+        self.account_number = (
+            False  # Reset account number with any change to ensure correctness
+        )
+        if not self.payment_method:
+            return {"domain": {"account_number": []}}
+
+        if self.payment_method == "ap" and self.vendor_id:
+            # Assuming 'vendor_account_number' is a field on the vendor pointing to 'idil.chart.account'
+            self.account_number = self.vendor_id.account_payable_id.id
+            return {
+                "domain": {
+                    "account_number": [
+                        ("id", "=", self.vendor_id.account_payable_id.id)
+                    ]
+                }
+            }
+        elif self.payment_method == "cash":
+            # Adjust the domain to suit how you distinguish cash accounts in 'idil.chart.account'
+            return {"domain": {"account_number": [("account_type", "=", "cash")]}}
+
+        # For bank_transfer or any other case, adjust the domain as needed
+        domain = {"account_number": [("account_type", "=", self.payment_method)]}
+        return {"domain": domain}
+
     @api.depends("currency_id", "purchase_date", "company_id")
     def _compute_exchange_rate(self):
         Rate = self.env["res.currency.rate"].sudo()

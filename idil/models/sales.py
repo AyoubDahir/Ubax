@@ -418,6 +418,11 @@ class SaleOrder(models.Model):
                     ("Quantity must be positive for product: %s") % p.display_name
                 )
 
+            if p.stock_quantity < line.quantity:
+                raise ValidationError(
+                    ("Insufficient stock for product: %s") % p.display_name
+                )
+
     def freeze_exchange_rate(self):
         self.ensure_one()
         if not self.currency_id:

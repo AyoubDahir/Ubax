@@ -13,6 +13,9 @@ class CustomerSaleReturn(models.Model):
     _description = "Customer Sale Return"
     _order = "id desc"
 
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
     name = fields.Char(string="Return Reference", default="New", readonly=True)
     customer_id = fields.Many2one(
         "idil.customer.registration", string="Customer", required=True
@@ -64,21 +67,31 @@ class CustomerSaleReturn(models.Model):
         for rec in self:
             rec.total_return = sum(line.total_amount for line in rec.return_lines)
 
-    @api.depends("currency_id")
+    @api.depends("currency_id", "return_date", "company_id")
     def _compute_exchange_rate(self):
+        Rate = self.env["res.currency.rate"].sudo()
         for order in self:
-            if order.currency_id:
-                rate = self.env["res.currency.rate"].search(
-                    [
-                        ("currency_id", "=", order.currency_id.id),
-                        ("name", "=", fields.Date.today()),
-                        ("company_id", "=", self.env.company.id),
-                    ],
-                    limit=1,
-                )
-                order.rate = rate.rate if rate else 0.0
-            else:
-                order.rate = 0.0
+            order.rate = 0.0
+            if not order.currency_id:
+                continue
+
+            doc_date = (
+                fields.Date.to_date(order.return_date)
+                if order.return_date
+                else fields.Date.today()
+            )
+
+            rate_rec = Rate.search(
+                [
+                    ("currency_id", "=", order.currency_id.id),
+                    ("name", "<=", doc_date),
+                    ("company_id", "in", [order.company_id.id, False]),
+                ],
+                order="company_id desc, name desc",
+                limit=1,
+            )
+
+            order.rate = rate_rec.rate or 0.0
 
     @api.model
     def create(self, vals):
@@ -206,6 +219,7 @@ class CustomerSaleReturn(models.Model):
                                 "trx_source_id": trx_source.id,
                                 "customer_id": rec.customer_id.id,
                                 "reffno": rec.name,
+                                "rate": self.rate,
                                 "trx_date": rec.return_date,
                                 "amount": total_return_amount,
                                 "amount_paid": 0,

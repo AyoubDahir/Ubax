@@ -1,14 +1,14 @@
 import base64
 import calendar
+from datetime import timedelta
 import io
-from datetime import datetime
 
 from dateutil.relativedelta import relativedelta
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import getSampleStyleSheet
 from odoo import models, fields, api
 from odoo.exceptions import UserError, ValidationError
 from reportlab.platypus import Image
@@ -25,6 +25,9 @@ class IdilEmployeeSalary(models.Model):
     _description = "Employee Salary"
     _inherit = ["mail.thread", "mail.activity.mixin"]
 
+    company_id = fields.Many2one(
+        "res.company", default=lambda s: s.env.company, required=True
+    )
     employee_id = fields.Many2one(
         "idil.employee", string="Employee", required=True, tracking=True
     )
@@ -54,13 +57,6 @@ class IdilEmployeeSalary(models.Model):
     advance_deduction = fields.Monetary(
         string="Advance Salary", default=0.0, store=True, tracking=True
     )
-
-    total_salary = fields.Monetary(
-        string="Total Salary",
-        compute="_compute_total_salary",
-        store=True,
-        tracking=True,
-    )
     total_pending_sales = fields.Monetary(
         string="Total Pending Sales",
         compute="_compute_total_pending_sales",
@@ -69,11 +65,37 @@ class IdilEmployeeSalary(models.Model):
         tracking=True,
     )
 
+    total_deductions = fields.Monetary(
+        string="Total Deductions",
+        compute="_compute_total_deductions",
+        store=True,
+        currency_field="currency_id",
+        tracking=True,
+    )
+
+    total_salary = fields.Monetary(
+        string="Total Salary",
+        compute="_compute_total_salary",
+        store=True,
+        tracking=True,
+    )
+
+    # Currency fields
     currency_id = fields.Many2one(
         "res.currency",
         string="Currency",
+        required=True,
+        default=lambda self: self.env["res.currency"].search(
+            [("name", "=", "SL")], limit=1
+        ),
         readonly=True,
-        default=lambda self: self.env.ref("base.USD").id,
+        tracking=True,
+    )
+    rate = fields.Float(
+        string="Exchange Rate",
+        compute="_compute_exchange_rate",
+        store=True,
+        readonly=True,
         tracking=True,
     )
     is_paid = fields.Boolean(string="Paid", default=True, tracking=True)
@@ -104,6 +126,39 @@ class IdilEmployeeSalary(models.Model):
         currency_field="currency_id",
         tracking=True,
     )
+
+    @api.depends("deductions", "advance_deduction", "total_pending_sales")
+    def _compute_total_deductions(self):
+        for rec in self:
+            rec.total_deductions = (
+                rec.deductions + rec.advance_deduction + rec.total_pending_sales
+            )
+
+    @api.depends("currency_id", "salary_date", "company_id")
+    def _compute_exchange_rate(self):
+        Rate = self.env["res.currency.rate"].sudo()
+        for order in self:
+            order.rate = 0.0
+            if not order.currency_id:
+                continue
+
+            doc_date = (
+                fields.Date.to_date(order.salary_date)
+                if order.salary_date
+                else fields.Date.today()
+            )
+
+            rate_rec = Rate.search(
+                [
+                    ("currency_id", "=", order.currency_id.id),
+                    ("name", "<=", doc_date),
+                    ("company_id", "in", [order.company_id.id, False]),
+                ],
+                order="company_id desc, name desc",
+                limit=1,
+            )
+
+            order.rate = rate_rec.rate or 0.0
 
     @api.onchange("employee_id")
     def _onchange_employee_bonus(self):
@@ -195,60 +250,97 @@ class IdilEmployeeSalary(models.Model):
                     f"Cannot process salary for {record.employee_id.name}. Contract dates are missing."
                 )
 
-    @api.onchange("employee_id", "salary_date")
+    @api.onchange("employee_id")
     def _onchange_employee_id(self):
         """Populate advance_deduction based on selected employee and same month check."""
         for record in self:
-            if record.employee_id and record.salary_date:
-                # Extract year and month from salary_date
-                salary_month = fields.Date.from_string(record.salary_date).month
-                salary_year = fields.Date.from_string(record.salary_date).year
+            if record.employee_id:
 
                 # Search for advances within the same year and month as salary_date
                 advances = self.env["idil.employee.salary.advance"].search(
                     [
                         ("employee_id", "=", record.employee_id.id),
-                        ("state", "=", "approved"),
-                        ("request_date", ">=", f"{salary_year}-{salary_month:02d}-01"),
-                        (
-                            "request_date",
-                            "<=",
-                            f"{salary_year}-{salary_month:02d}-{calendar.monthrange(salary_year, salary_month)[1]}",
-                        ),
+                        ("state", "in", ["approved", "partially_deducted"]),
                     ]
                 )
-                record.advance_deduction = sum(advances.mapped("advance_amount"))
+                record.advance_deduction = sum(advances.mapped("remaining_amount"))
             else:
                 record.advance_deduction = 0.0
 
-    from datetime import datetime
-
     @api.model
     def create(self, vals):
-        # Calculate advance deduction if employee_id and salary_date are provided
-        if vals.get("employee_id") and vals.get("salary_date"):
-            salary_date = fields.Date.from_string(vals["salary_date"])
-            # Extract the year and month from the salary_date
-            year_month = salary_date.strftime("%Y-%m")
-
-            # Search for advances within the same month and year as the salary_date
+        # If there's an employee_id and salary_date, prepare advances info
+        desired_deduction = 0.0
+        advances = self.env["idil.employee.salary.advance"]
+        if vals.get("employee_id"):
+            # Get advances in that month which are approved or partially_deducted
             advances = self.env["idil.employee.salary.advance"].search(
                 [
                     ("employee_id", "=", vals["employee_id"]),
-                    ("state", "=", "approved"),
-                    ("request_date", ">=", year_month + "-01"),  # Start of the month
-                    (
-                        "request_date",
-                        "<",
-                        (salary_date + relativedelta(months=1)).strftime("%Y-%m-%d"),
-                    ),  # End of the month
-                ]
+                    ("state", "in", ["approved", "partially_deducted"]),
+                ],
+                order="request_date asc, id asc",
             )
 
-            vals["advance_deduction"] = sum(advances.mapped("advance_amount"))
-            advances.write({"state": "deducted"})  # Mark advances as deducted
+            # Compute total available to deduct (account for any previously deducted_amount)
+            total_available = sum(
+                float(
+                    (adv.advance_amount or 0.0) - (getattr(adv, "deducted_amount", 0.0))
+                )
+                for adv in advances
+            )
 
+            # If user provided an advance_deduction in vals (user-adjusted), respect it but cap to available
+            if "advance_deduction" in vals:
+                # ensure numeric
+                try:
+                    user_requested = float(vals.get("advance_deduction") or 0.0)
+                except Exception:
+                    user_requested = 0.0
+                desired_deduction = max(0.0, min(user_requested, total_available))
+            else:
+                # default to fully deduct available advances
+                desired_deduction = total_available
+
+            # Set the actual value that will be used
+            vals["advance_deduction"] = desired_deduction
+
+        # Create the salary record
         record = super(IdilEmployeeSalary, self).create(vals)
+
+        # If we found advances and we have an amount to deduct, allocate across advances
+        if advances and float(vals.get("advance_deduction", 0.0)) > 0.0:
+            to_allocate = float(vals.get("advance_deduction", 0.0))
+
+            for adv in advances:
+                if to_allocate <= 0:
+                    break
+
+                # Ensure deducted_amount exists (if model was upgraded recently)
+                existing_deducted = float(getattr(adv, "deducted_amount", 0.0))
+                adv_remaining = float((adv.advance_amount or 0.0) - existing_deducted)
+                if adv_remaining <= 0.0:
+                    continue
+
+                if to_allocate >= adv_remaining:
+                    # fully consume this advance
+                    adv.write(
+                        {
+                            "deducted_amount": existing_deducted + adv_remaining,
+                            "state": "deducted",
+                        }
+                    )
+                    to_allocate -= adv_remaining
+                else:
+                    # partial consumption
+                    adv.write(
+                        {
+                            "deducted_amount": existing_deducted + to_allocate,
+                            "state": "partially_deducted",
+                        }
+                    )
+                    to_allocate = 0.0
+                    break
 
         # Book transaction booking and lines
         self._book_transaction(record)
@@ -321,6 +413,7 @@ class IdilEmployeeSalary(models.Model):
                 "trx_source_id": salary_expense_trx_source.id,
                 "payment_method": "cash",
                 "payment_status": "paid",
+                "rate": record.rate,
                 "trx_date": record.salary_date,
                 "amount": record.total_salary,
                 "amount_paid": record.total_salary,
@@ -530,24 +623,29 @@ class IdilEmployeeSalary(models.Model):
             _logger.warning("\n".join(salary_logs))
             raise UserError("\n".join(salary_logs))
 
-    @api.constrains("employee_id", "salary_date")
-    def _check_duplicate_salary(self):
-        for record in self:
-            # Get the month and year of the salary_date
-            salary_month = record.salary_date.strftime("%Y-%m")
-            # Check if a record exists for the same employee and month
-            duplicate = self.search(
-                [
-                    ("employee_id", "=", record.employee_id.id),
-                    ("salary_date", ">=", f"{salary_month}-01"),
-                    ("salary_date", "<=", f"{salary_month}-31"),
-                    ("id", "!=", record.id),  # Exclude the current record
-                ]
-            )
-            if duplicate:
-                raise ValidationError(
-                    f"A salary record for {record.employee_id.name} already exists for this month."
-                )
+    # @api.constrains("employee_id", "salary_date")
+    # def _check_duplicate_salary(self):
+    #     for record in self:
+    #         if not record.salary_date:
+    #             continue
+    #         # first day of month
+    #         first_day = record.salary_date.replace(day=1)
+    #         # last day of month: go to next month, subtract 1 day
+    #         next_month = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1)
+    #         last_day = next_month - timedelta(days=1)
+
+    #         duplicate = self.search(
+    #             [
+    #                 ("employee_id", "=", record.employee_id.id),
+    #                 ("salary_date", ">=", first_day),
+    #                 ("salary_date", "<=", last_day),
+    #                 ("id", "!=", record.id),
+    #             ]
+    #         )
+    #         if duplicate:
+    #             raise ValidationError(
+    #                 f"A salary record for {record.employee_id.name} already exists for this month."
+    #             )
 
     def action_generate_salary_report_pdf(self):
         """Generate the payment slip for the selected employee."""
