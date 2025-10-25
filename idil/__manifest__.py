@@ -1,7 +1,7 @@
 {
     "name": "UBAX",
     "version": "1.0.0",
-    "category": "Idil",
+    "category": "Ubax",
     "license": "LGPL-3",
     "summary": "UBAX Management System",
     "description": "Mohamed",
