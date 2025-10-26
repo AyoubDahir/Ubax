@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "category": "Ubax",
     "license": "LGPL-3",
-    "summary": "UBAX Management System",
+    "summary": "wais Management System",
     "description": "Mohamed",
     "depends": ["mail", "point_of_sale", "web"],
     "application": True,
